@@ -50,6 +50,36 @@ namespace FileCopyTool
                 WriteToConsoleAndLog("Manual batching mode enabled", ConsoleColor.Yellow);
             }
 
+            bool? cmdLineMoveMode = null;
+            if (args.Contains("-c") || args.Contains("--copy"))
+            {
+                cmdLineMoveMode = false;
+            }
+            else if (args.Contains("-m") || args.Contains("--move"))
+            {
+                cmdLineMoveMode = true;
+            }
+
+            int? cmdLineThreads = null;
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i].StartsWith("-t") && args[i].Length > 2)
+                {
+                    string threadStr = args[i].Substring(2);
+                    if (int.TryParse(threadStr, out int threads) && threads >= 1 && threads <= 500)
+                    {
+                        cmdLineThreads = threads;
+                    }
+                }
+                else if ((args[i] == "-t" || args[i] == "--threads") && i + 1 < args.Length)
+                {
+                    if (int.TryParse(args[i + 1], out int threads) && threads >= 1 && threads <= 500)
+                    {
+                        cmdLineThreads = threads;
+                    }
+                }
+            }
+
             // Parse command line arguments for source and destination
             string? sourcePath = null;
             string? destinationPath = null;
@@ -93,7 +123,7 @@ namespace FileCopyTool
                     Console.WriteLine();
                 }
 
-                await RunCopyToolAsync(sourcePath, destinationPath);
+                await RunCopyToolAsync(sourcePath, destinationPath, cmdLineMoveMode, cmdLineThreads);
             }
             catch (Exception ex)
             {
@@ -170,15 +200,24 @@ namespace FileCopyTool
             Console.WriteLine("  <source>      - Source file or folder path (required if provided)");
             Console.WriteLine("  <destination> - Destination folder path (optional - will prompt if not provided)");
             Console.WriteLine();
+            Console.WriteLine("FLAGS:");
+            Console.WriteLine("  -c, --copy               - Force copy mode (default if not specified)");
+            Console.WriteLine("  -m, --move               - Force move mode");
+            Console.WriteLine("  -t<N>, --threads <N>     - Number of threads (1-500, e.g., -t8 or --threads 16)");
+            Console.WriteLine("  -l, --ludicrous          - Enable ludicrous mode (50-500 threads)");
+            Console.WriteLine("  -fb, --force-batch-prequeue - Enable advanced batch prequeuing");
+            Console.WriteLine("  --manual-batching        - Disable auto smart batching");
+            Console.WriteLine();
             Console.WriteLine("EXAMPLES:");
             Console.WriteLine("  FCP.exe \"C:\\MyFiles\"                         # Will prompt for destination");
             Console.WriteLine("  FCP.exe \"C:\\MyFiles\" \"D:\\Backup\"");
-            Console.WriteLine("  FCP.exe \"C:\\file.txt\" \"D:\\Backup\" --ludicrous");
-            Console.WriteLine("  FCP.exe \"C:\\BigFolder\" \"E:\\Archive\" -l --force-batch-prequeue");
+            Console.WriteLine("  FCP.exe \"C:\\MyFiles\" \"D:\\Backup\" -m -t8      # Move with 8 threads");
+            Console.WriteLine("  FCP.exe \"C:\\file.txt\" \"D:\\Backup\" --copy --ludicrous");
+            Console.WriteLine("  FCP.exe \"C:\\BigFolder\" \"E:\\Archive\" -m -l --force-batch-prequeue");
             Console.WriteLine();
         }
 
-        static async Task RunCopyToolAsync(string? sourcePath = null, string? destinationPath = null)
+        static async Task RunCopyToolAsync(string? sourcePath = null, string? destinationPath = null, bool? cmdLineMoveMode = null, int? cmdLineThreads = null)
         {
             if (string.IsNullOrEmpty(sourcePath))
             {
@@ -217,7 +256,7 @@ namespace FileCopyTool
             bool isFolder = Directory.Exists(sourcePath);
             bool isFile = File.Exists(sourcePath);
 
-            // This should not happen since we validated above, but things never do what you tell them to.
+            // This should not happen since we validated above, but stuff tends to break on windows
             if (!isFolder && !isFile)
             {
                 WriteToConsoleAndLog("Source path does not exist!", ConsoleColor.Red);
@@ -228,9 +267,27 @@ namespace FileCopyTool
 
             if (isFolder)
             {
-                _isMoveOperation = GetMoveOrCopyChoice();
+                if (cmdLineMoveMode.HasValue)
+                {
+                    _isMoveOperation = cmdLineMoveMode.Value;
+                    WriteToConsoleAndLog($"Using {(_isMoveOperation ? "move" : "copy")} mode from command line", ConsoleColor.Cyan);
+                }
+                else
+                {
+                    _isMoveOperation = GetMoveOrCopyChoice();
+                }
+
                 _useBatching = DetermineAutoSmartBatching(sourcePath);
-                maxThreads = GetThreadCount();
+
+                if (cmdLineThreads.HasValue)
+                {
+                    maxThreads = cmdLineThreads.Value;
+                    WriteToConsoleAndLog($"Using {maxThreads} threads from command line", ConsoleColor.Cyan);
+                }
+                else
+                {
+                    maxThreads = GetThreadCount();
+                }
             }
 
             WriteToConsoleAndLog($"Starting {(_isMoveOperation ? "move" : "copy")} operation...", ConsoleColor.Green);
@@ -276,6 +333,35 @@ namespace FileCopyTool
                 {
                     WriteToConsoleAlways($"  - {file}", ConsoleColor.Red);
                 }
+            }
+
+            if (_isMoveOperation && isFolder && _failedItems == 0 && _processedItems > 0)
+            {
+                try
+                {
+                    WriteToConsoleAlways("\nMove operation completed successfully. Cleaning up source directory...", ConsoleColor.Yellow);
+                    
+                    DeleteEmptyDirectories(sourcePath);
+                    
+                    if (Directory.Exists(sourcePath) && !Directory.EnumerateFileSystemEntries(sourcePath).Any())
+                    {
+                        Directory.Delete(sourcePath);
+                        WriteToConsoleAlways($"✓ Deleted source directory: {sourcePath}", ConsoleColor.Green);
+                    }
+                    else if (Directory.Exists(sourcePath))
+                    {
+                        WriteToConsoleAlways($"Source directory not empty, keeping: {sourcePath}", ConsoleColor.Yellow);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    WriteToConsoleAlways($"Could not delete source directory: {ex.Message}", ConsoleColor.Yellow);
+                    WriteToConsoleAlways("Source files were moved successfully, but manual cleanup may be needed.", ConsoleColor.Yellow);
+                }
+            }
+            else if (_isMoveOperation && _failedItems > 0)
+            {
+                WriteToConsoleAlways($"\nMove operation had {_failedItems} failures. Source directory will not be deleted for safety.", ConsoleColor.Yellow);
             }
         }
 
@@ -799,7 +885,7 @@ namespace FileCopyTool
                 int threadId = Thread.CurrentThread.ManagedThreadId;
                 int batchNumber = fileBatch.GetHashCode() % 1000;
 
-                WriteToConsoleAndLog($"[T{threadId}] 📦 Processing batch of {fileBatch.Count} files", ConsoleColor.Magenta);
+                WriteToConsoleAndLog($"[T{threadId}]  Processing batch of {fileBatch.Count} files", ConsoleColor.Magenta);
 
                 var startTime = DateTime.Now;
                 long batchBytes = 0;
@@ -853,7 +939,7 @@ namespace FileCopyTool
                 Interlocked.Add(ref _failedItems, batchFailed);
                 Interlocked.Add(ref _bytesProcessed, batchBytes);
 
-                WriteToConsoleAndLog($"[T{threadId}] ✓ Batch completed: {batchSuccess}/{fileBatch.Count} files ({elapsed.TotalMilliseconds:F0}ms, {FormatBytes(batchBytes)})", ConsoleColor.Green);
+                WriteToConsoleAndLog($"[T{threadId}] Batch completed: {batchSuccess}/{fileBatch.Count} files ({elapsed.TotalMilliseconds:F0}ms, {FormatBytes(batchBytes)})", ConsoleColor.Green);
             }
             finally
             {
@@ -931,6 +1017,37 @@ namespace FileCopyTool
             return directories;
         }
 
+        static void DeleteEmptyDirectories(string rootPath)
+        {
+            try
+            {
+                var allDirectories = GetAllDirectories(rootPath)
+                    .Where(dir => !dir.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(dir => dir.Split(Path.DirectorySeparatorChar).Length)
+                    .ToList();
+
+                foreach (var directory in allDirectories)
+                {
+                    try
+                    {
+                        if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
+                        {
+                            Directory.Delete(directory);
+                            WriteToConsoleAndLog($" Deleted empty directory: {Path.GetRelativePath(rootPath, directory)}", ConsoleColor.Green);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteToConsoleAndLog($" Could not delete directory {directory}: {ex.Message}", ConsoleColor.Yellow);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteToConsoleAndLog($"Error during directory cleanup: {ex.Message}", ConsoleColor.Red);
+            }
+        }
+
         static async Task ProcessFileAsync(string sourceFile, string sourceRoot, string destinationRoot, SemaphoreSlim semaphore)
         {
             await semaphore.WaitAsync();
@@ -1005,7 +1122,7 @@ namespace FileCopyTool
             catch (DirectoryNotFoundException ex)
             {
                 Interlocked.Increment(ref _failedItems);
-                string error = $"✗ Directory not found: {sourceFile} - {ex.Message}";
+                string error = $" Directory not found: {sourceFile} - {ex.Message}";
                 WriteToConsoleAndLog(error, ConsoleColor.Red);
                 lock (_failedFiles)
                 {
@@ -1015,7 +1132,7 @@ namespace FileCopyTool
             catch (PathTooLongException ex)
             {
                 Interlocked.Increment(ref _failedItems);
-                string error = $"✗ Path too long: {sourceFile} - {ex.Message}";
+                string error = $" Path too long: {sourceFile} - {ex.Message}";
                 WriteToConsoleAndLog(error, ConsoleColor.Red);
                 lock (_failedFiles)
                 {
@@ -1025,7 +1142,7 @@ namespace FileCopyTool
             catch (IOException ex)
             {
                 Interlocked.Increment(ref _failedItems);
-                string error = $"✗ I/O Error: {sourceFile} - {ex.Message}";
+                string error = $" I/O Error: {sourceFile} - {ex.Message}";
                 WriteToConsoleAndLog(error, ConsoleColor.Red);
                 lock (_failedFiles)
                 {
@@ -1035,7 +1152,7 @@ namespace FileCopyTool
             catch (Exception ex)
             {
                 Interlocked.Increment(ref _failedItems);
-                string error = $"✗ Unexpected error: {sourceFile} - {ex.Message}";
+                string error = $" Unexpected error: {sourceFile} - {ex.Message}";
                 WriteToConsoleAndLog(error, ConsoleColor.Red);
                 lock (_failedFiles)
                 {
