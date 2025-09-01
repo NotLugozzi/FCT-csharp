@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
@@ -50,6 +50,20 @@ namespace FileCopyTool
                 WriteToConsoleAndLog("Manual batching mode enabled", ConsoleColor.Yellow);
             }
 
+            // Parse command line arguments for source and destination
+            string? sourcePath = null;
+            string? destinationPath = null;
+            
+            var nonFlagArgs = args.Where(arg => !arg.StartsWith("-")).ToArray();
+            if (nonFlagArgs.Length >= 1)
+            {
+                sourcePath = nonFlagArgs[0].Trim('"');
+            }
+            if (nonFlagArgs.Length >= 2)
+            {
+                destinationPath = nonFlagArgs[1].Trim('"');
+            }
+
             try
             {
                 if (args.Length > 0 && args[0].ToLower() == "--create-test-files")
@@ -64,7 +78,7 @@ namespace FileCopyTool
                     WriteToConsoleAndLog("Warning: This will spawn many threads and push your system hard!", ConsoleColor.Yellow);
                     if (_batchPrequeuing)
                     {
-                        WriteToConsoleAndLog("🔥 BATCH PREQUEUING ENABLED - Ultimate performance mode!", ConsoleColor.Red);
+                        WriteToConsoleAndLog("BATCH PREQUEUING ENABLED - Ultimate performance mode!", ConsoleColor.Red);
                     }
                     WriteToConsoleAndLog("Press any key to continue or Ctrl+C to cancel...", ConsoleColor.Yellow);
                     Console.ReadKey(true);
@@ -72,14 +86,14 @@ namespace FileCopyTool
                 }
                 else if (_batchPrequeuing)
                 {
-                    WriteToConsoleAndLog("🔥 BATCH PREQUEUING ENABLED!", ConsoleColor.Red);
+                    WriteToConsoleAndLog("BATCH PREQUEUING ENABLED!", ConsoleColor.Red);
                     WriteToConsoleAndLog("Advanced optimization: Small file batches will start at 75% of large files", ConsoleColor.Yellow);
                     WriteToConsoleAndLog("Press any key to continue or Ctrl+C to cancel...", ConsoleColor.Yellow);
                     Console.ReadKey(true);
                     Console.WriteLine();
                 }
 
-                await RunCopyToolAsync();
+                await RunCopyToolAsync(sourcePath, destinationPath);
             }
             catch (Exception ex)
             {
@@ -142,45 +156,68 @@ namespace FileCopyTool
             Console.WriteLine("========================");
             Console.WriteLine();
             Console.WriteLine("USAGE:");
-            Console.WriteLine("  FCP.exe                         - Start interactive mode");
-            Console.WriteLine("  FCP.exe --ludicrous | -l        - Start in LUDICROUS mode");
-            Console.WriteLine("  FCP.exe --force-batch-prequeue  - Enable advanced batch prequeuing");
-            Console.WriteLine("  FCP.exe --manual-batching       - Disable auto smart batching");
-            Console.WriteLine("  FCP.exe --create-test-files     - Create test files for benchmarking");
-            Console.WriteLine("  FCP.exe -h                      - Show this help");
+            Console.WriteLine("  FCT.exe                                     - Start interactive mode");
+            Console.WriteLine("  FCT.exe <source>                            - Use source from args, prompt for destination");
+            Console.WriteLine("  FCT.exe <source> <destination>              - Copy/move from source to destination");
+            Console.WriteLine("  FCT.exe <source> <destination> --ludicrous  - Use ludicrous mode");
+            Console.WriteLine("  FCT.exe --ludicrous | -l                    - Start in LUDICROUS mode (interactive)");
+            Console.WriteLine("  FCT.exe --force-batch-prequeue              - Enable advanced batch prequeuing");
+            Console.WriteLine("  FCT.exe --manual-batching                   - Disable auto smart batching");
+            Console.WriteLine("  FCT.exe --create-test-files                 - Create test files for benchmarking");
+            Console.WriteLine("  FCT.exe -h                                  - Show this help");
             Console.WriteLine();
-            Console.WriteLine("MODES:");
-            Console.WriteLine("  Standard Mode: Limited to CPU cores (safe, conservative)");
-            Console.WriteLine("  LUDICROUS Mode: 50-500 threads for maximum I/O throughput");
+            Console.WriteLine("ARGUMENTS:");
+            Console.WriteLine("  <source>      - Source file or folder path (required if provided)");
+            Console.WriteLine("  <destination> - Destination folder path (optional - will prompt if not provided)");
             Console.WriteLine();
-            Console.WriteLine("FEATURES:");
-            Console.WriteLine("  ✓ Multi-threaded file operations");
-            Console.WriteLine("  ✓ Intelligent batching for small files");
-            Console.WriteLine("  ✓ Auto smart batching (automatic optimization)");
-            Console.WriteLine("  ✓ Advanced batch prequeuing (75% trigger)");
-            Console.WriteLine("  ✓ Real-time progress bar with performance metrics");
-            Console.WriteLine("  ✓ Thread-safe logging to console and file");
-            Console.WriteLine("  ✓ Comprehensive error handling");
-            Console.WriteLine("  ✓ Copy or move operations");
-            Console.WriteLine("  ✓ Recursive directory processing");
-            Console.WriteLine();
-            Console.WriteLine("PERFORMANCE:");
-            Console.WriteLine("  Standard: ~2-4x faster than Windows Explorer");
-            Console.WriteLine("  LUDICROUS: ~5-10x faster (I/O bound workloads)");
-            Console.WriteLine("  Batching: ~15-30% faster for many small files");
+            Console.WriteLine("EXAMPLES:");
+            Console.WriteLine("  FCP.exe \"C:\\MyFiles\"                         # Will prompt for destination");
+            Console.WriteLine("  FCP.exe \"C:\\MyFiles\" \"D:\\Backup\"");
+            Console.WriteLine("  FCP.exe \"C:\\file.txt\" \"D:\\Backup\" --ludicrous");
+            Console.WriteLine("  FCP.exe \"C:\\BigFolder\" \"E:\\Archive\" -l --force-batch-prequeue");
             Console.WriteLine();
         }
 
-        static async Task RunCopyToolAsync()
+        static async Task RunCopyToolAsync(string? sourcePath = null, string? destinationPath = null)
         {
-            string sourcePath = GetSourcePath();
-            string destinationPath = GetDestinationPath();
+            if (string.IsNullOrEmpty(sourcePath))
+            {
+                sourcePath = GetSourcePath();
+            }
+            else
+            {
+                if (!File.Exists(sourcePath) && !Directory.Exists(sourcePath))
+                {
+                    WriteToConsoleAndLog($"Error: Source path does not exist: {sourcePath}", ConsoleColor.Red);
+                    return;
+                }
+                WriteToConsoleAndLog($"Using source path from arguments: {sourcePath}", ConsoleColor.Cyan);
+            }
+
+            if (string.IsNullOrEmpty(destinationPath))
+            {
+                destinationPath = GetDestinationPath();
+            }
+            else
+            {
+                try
+                {
+                    Directory.CreateDirectory(destinationPath);
+                    WriteToConsoleAndLog($"Using destination path from arguments: {destinationPath}", ConsoleColor.Cyan);
+                }
+                catch (Exception ex)
+                {
+                    WriteToConsoleAndLog($"Error: Cannot create destination directory: {destinationPath} - {ex.Message}", ConsoleColor.Red);
+                    return;
+                }
+            }
 
             SetupLogging();
 
             bool isFolder = Directory.Exists(sourcePath);
             bool isFile = File.Exists(sourcePath);
 
+            // This should not happen since we validated above, but things never do what you tell them to.
             if (!isFolder && !isFile)
             {
                 WriteToConsoleAndLog("Source path does not exist!", ConsoleColor.Red);
