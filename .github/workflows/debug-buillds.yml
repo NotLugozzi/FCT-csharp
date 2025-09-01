@@ -1,0 +1,33 @@
+name: Build and Package FCT
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-debug:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+        
+    - name: Build Debug
+      run: dotnet build FCT.sln --configuration Debug
+      
+    - name: Create Debug package
+      run: |
+        Compress-Archive -Path "bin\Debug\net8.0\*" -DestinationPath "FCT-Debug.zip"
+        
+    - name: Upload Debug artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: FCT-Debug
+        path: FCT-Debug.zip
+        retention-days: 30
